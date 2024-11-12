@@ -1,4 +1,3 @@
-#include <vector>
 #include <iostream>
 
 constexpr double Pi = 3.14159265358979323846;
@@ -75,12 +74,11 @@ Block IDCT(const Block& block) {
 // Test function
 void printBlock(const Block &block) {
     for (int i = 0; i < 8; i++) {
-    std::cout << "[";
-    
+        std::cout << "[";
         for (int j = 0; j < 8; j++) {
-      std::cout << block.pixels[i][j] << ", ";
+            std::cout << block.pixels[i][j] << ", ";
         }
-    std::cout << "],";
+        std::cout << "],";
         std::cout << "\n";
     }
     std::cout << "\n";
