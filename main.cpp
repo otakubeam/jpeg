@@ -73,11 +73,14 @@ Block IDCT(const Block& block) {
 }
 
 // Test function
-void printBlock(const Block& block) {
+void printBlock(const Block &block) {
     for (int i = 0; i < 8; i++) {
+    std::cout << "[";
+    
         for (int j = 0; j < 8; j++) {
-            std::cout << block.pixels[i][j] << "\t";
+      std::cout << block.pixels[i][j] << ", ";
         }
+    std::cout << "],";
         std::cout << "\n";
     }
     std::cout << "\n";
@@ -85,16 +88,14 @@ void printBlock(const Block& block) {
 
 int main() {
     // Define a sample 8x8 signal block
-    Block signal = {{
-        {52, 55, 61, 66, 70, 61, 64, 73},
+  Block signal = {{{52, 55, 61, 66, 70, 61, 64, 73},
         {63, 59, 55, 90, 109, 85, 69, 72},
         {62, 59, 68, 113, 144, 104, 66, 73},
         {63, 58, 71, 122, 154, 106, 70, 69},
         {67, 61, 68, 104, 126, 88, 68, 70},
         {79, 65, 60, 70, 77, 68, 58, 75},
         {85, 71, 64, 59, 55, 61, 65, 83},
-        {87, 79, 69, 68, 65, 76, 78, 94}
-    }};
+                   {87, 79, 69, 68, 65, 76, 78, 94}}};
 
     std::cout << "Original Signal Block:\n";
     printBlock(signal);
