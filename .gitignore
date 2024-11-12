@@ -1,0 +1,15 @@
+build/CMakeCache.txt
+build/.cmake/api/v1/query/client-vscode/query.json
+build/CMakeFiles/cmake.check_cache
+build/CMakeFiles/CMakeConfigureLog.yaml
+build/CMakeFiles/3.31.0/CMakeRCCompiler.cmake
+build/CMakeFiles/3.31.0/CMakeSystem.cmake
+build/CMakeFiles/3.31.0/CompilerIdC/CMakeCCompilerId.c
+build/CMakeFiles/3.31.0/CompilerIdC/CMakeCCompilerId.obj
+build/CMakeFiles/3.31.0/CompilerIdCXX/CMakeCXXCompilerId.cpp
+build/CMakeFiles/3.31.0/CompilerIdCXX/CMakeCXXCompilerId.obj
+build/CMakeFiles/ShowIncludes/foo.h
+build/CMakeFiles/ShowIncludes/main.c
+build/CMakeFiles/ShowIncludes/main.obj
+.vscode/launch.json
+.vscode/tasks.json
