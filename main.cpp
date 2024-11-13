@@ -80,6 +80,57 @@ auto performRle(Block blk) -> RunLengthResultAC {
     return result;
 }
 
+class BitWriter {
+public:
+    using StorageType = std::size_t;
+
+    BitWriter() : store(0), bits_written(0), total_bits_written(0) {}
+
+    void write(int val, size_t bitlen) {
+        while (bitlen > 0) {
+            bitlen--;
+            store <<= 1;
+            store |= (val >> bitlen) & 1;
+            bits_written++;
+            
+            if (bits_written == sizeof(StorageType) * 8) {  // Use bits instead of bytes
+                buffer.push_back(store);
+                store = 0;
+                bits_written = 0;
+                total_bits_written += sizeof(StorageType) * 8;
+            }
+        }
+    }
+
+    void flush() {
+        if (bits_written == 0) {
+            return;
+        }
+        auto bits_left = (sizeof(StorageType) * 8) - bits_written;
+        store <<= bits_left;
+        buffer.push_back(store);
+        total_bits_written += bits_written;
+        store = 0;
+        bits_written = 0;
+    }
+
+    const std::vector<StorageType>& getBuffer() const {
+        return buffer;
+    }
+
+    size_t getTotalBitsWritten() const {
+        return total_bits_written;
+    }
+
+private:
+
+    std::vector<StorageType> buffer;
+    StorageType store;
+    size_t bits_written;
+    size_t total_bits_written;
+};
+
+
 constexpr Block luminanceQuantTable = {{
     {16, 11, 10, 16, 24, 40, 51, 61},
     {12, 12, 14, 19, 26, 58, 60, 55},
