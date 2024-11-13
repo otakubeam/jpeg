@@ -57,6 +57,29 @@ struct Block {
 };
 
 
+using DC = int;
+using AC = int;
+using RunLengthResultAC = std::vector<std::pair<int, AC>>;
+
+auto performRle(Block blk) -> RunLengthResultAC {
+    std::size_t zero_count = 0;
+    RunLengthResultAC result;
+
+    for (auto elem_double : blk) {
+        if (auto elem = elem_double; elem == 0) {
+            zero_count++; 
+        } else {
+            result.emplace_back(zero_count, elem);
+        }
+    }
+
+    if (zero_count != 0) {
+        result.emplace_back(0, 0);
+    }
+
+    return result;
+}
+
 constexpr Block luminanceQuantTable = {{
     {16, 11, 10, 16, 24, 40, 51, 61},
     {12, 12, 14, 19, 26, 58, 60, 55},
