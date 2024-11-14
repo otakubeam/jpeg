@@ -616,13 +616,29 @@ constexpr Block chrominanceQuantTable = {{
     {99, 99, 99, 99, 99, 99, 99, 99}
 }};
 
-void writeHuffmanTable(BitWriter& w, const HuffmanTable& table) {
+void writeHuffmanTable(BitWriter& w, const HuffmanTable& table, int id) {
+    w.write(0xFFC4, 16);  // DHT marker, 16 bits
+
     // Count the bitlen frequencies 
-    std::array<int, 32> bitlen_freq;
+    std::array<int, 32> bitlen_freq = {0};;
+
+    // HuffmanSymbol is {run_length, size} pair
+    using HuffmanSymbol = std::pair<int,int>;                  
+    // Within the same bitlen sort the symbols num value
+    using HuffmanSymbolsByCode = std::map<int, HuffmanSymbol>;
+    // Vector of Bitlen -> SortedSymbols
+    std::vector<HuffmanSymbolsByCode> symbols(17);  // 0 unused!
+
     for (auto [k,v]: table) {
-        auto bitlen = v.second;
+        auto [code, bitlen] = v;
+        symbols[bitlen].emplace(code, k);
         bitlen_freq[bitlen]++;
     }
+    auto sector_length = 3 + // Length (2 bytes) + Table Class 
+                        16 + // Frequencies of symbols of varying bitlengths
+            std::accumulate(bitlen_freq.begin(), bitlen_freq.end(), 0); // No. of symbols
+    w.write(sector_length, 16);     // Length of DHT segment, 16 bits (example length)
+    w.write(id, 8);                 // Table Class (DC=0) and Table ID, 8 bits
 
     // Write frequencies of bitlengths in header
     for (int i = 1; i <= 16; i++) {
@@ -631,6 +647,15 @@ void writeHuffmanTable(BitWriter& w, const HuffmanTable& table) {
     }
 
     // Write corresponding codes in order of incresing bitlengths
+    for (auto huff_symbols_by_code: symbols) {
+        for (auto [code, symbol] : huff_symbols_by_code) {
+            auto [runlength, size] = symbol;
+            uint8_t packed_symbol = (runlength << 4) | size; 
+            w.write(packed_symbol, 8);
+        }
+    }
+}
+
     for (int i = 1; i <= 16; i++) {
         for (auto [k,v]: table) {
             auto [bitlen, code] = v;
@@ -724,14 +749,10 @@ void writeJpegHeader() {
     jpegHeaderWriter.write(0x01, 8);     // Quantization table ID for Cr, 8 bits
 
     // DHT Marker (Define Huffman Table)
-    jpegHeaderWriter.write(0xFFC4, 16);  // DHT marker, 16 bits
-    jpegHeaderWriter.write(1 + 16 + 1337, 16);  // Length of DHT segment, 16 bits (example length)
-    jpegHeaderWriter.write(0b10000, 8);     // Table Class (DC=0) and Table ID, 8 bits
-    writeHuffmanTable(jpegHeaderWriter, acLuminanceHuffmanTable);
-
-    // dcChrominance, 0b00001
-    // dcLuminance,   0b00010
-    // acChrominance, 0b10011
+    writeHuffmanTable(jpegHeaderWriter, acLuminanceHuffmanTable,    0b10000);
+    writeHuffmanTable(jpegHeaderWriter, dcChrominanceHuffmanTable,  0b00001);
+    writeHuffmanTable(jpegHeaderWriter, dcLuminanceHuffmanTable,    0b00010);
+    writeHuffmanTable(jpegHeaderWriter, acChrominanceHuffmanTable,  0b10011);
 
     // SOS Marker (Start of Scan)
     jpegHeaderWriter.write(0xFFDA, 16);  // SOS marker, 16 bits
