@@ -1,9 +1,13 @@
+#include <cstdint>
+#include <map>
 #include <array>
-#include <vector>
+#include <numeric>
 #include <unordered_map>
+#include <vector>
 #include <iostream>
 #include <utility>
 #include <fstream>
+#include <algorithm>
 
 constexpr double Pi = 3.14159265358979323846;
 
@@ -165,15 +169,70 @@ public:
     }
 
 private:
-
     std::vector<StorageType> buffer;
     StorageType store;
     size_t bits_written;
     size_t total_bits_written;
 };
 
+class BitReader {
+public:
+    using StorageType = std::size_t;
+
+    // Constructor takes a buffer to read from
+    BitReader(const std::vector<StorageType>& buffer)
+        : buffer(buffer), store(0), bits_read(0), total_bits_read(0), buffer_index(0) {
+        if (!buffer.empty()) {
+            store = buffer[0];
+        }
+    }
+
+    // Read 'bitlen' bits and return as an integer
+    int read(size_t bitlen) {
+        int result = 0;
+        while (bitlen > 0) {
+            if (bits_read == sizeof(StorageType) * 8) {
+                // Move to the next storage element in the buffer
+                buffer_index++;
+                if (buffer_index >= buffer.size()) {
+                    throw std::out_of_range("No more bits to read");
+                }
+                store = buffer[buffer_index];
+                bits_read = 0;
+            }
+
+            // Calculate the number of bits we can read in this iteration
+            size_t bits_to_read = std::min(bitlen, sizeof(StorageType) * 8 - bits_read);
+
+            // Shift result and append the new bits
+            result <<= bits_to_read;
+            result |= (store >> (sizeof(StorageType) * 8 - bits_read - bits_to_read)) & ((1 << bits_to_read) - 1);
+
+            // Update counters
+            bits_read += bits_to_read;
+            total_bits_read += bits_to_read;
+            bitlen -= bits_to_read;
+        }
+
+        return result;
+    }
+
+    // Get total number of bits read
+    size_t getTotalBitsRead() const {
+        return total_bits_read;
+    }
+
+private:
+    const std::vector<StorageType>& buffer;
+    StorageType store;
+    size_t bits_read;
+    size_t total_bits_read;
+    size_t buffer_index;
+};
+
 using HuffmanCode = std::pair<size_t, size_t>;
-using HuffmanTable = std::unordered_map<std::pair<int, int>, HuffmanCode>;
+using HuffmanTable = std::map<std::pair<int, int>, HuffmanCode>;
+
 // Initialize the unordered_map with HuffmanCode structs
 HuffmanTable acLuminanceHuffmanTable = {
     // Format: {{run, size}, {code, bit_length}}
