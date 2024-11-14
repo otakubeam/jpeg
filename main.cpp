@@ -366,6 +366,7 @@ void encodeAC(RunLengthResultAC rledAC) {
 
     writer.flush();
 }
+
 constexpr Block luminanceQuantTable = {{
     {16, 11, 10, 16, 24, 40, 51, 61},
     {12, 12, 14, 19, 26, 58, 60, 55},
@@ -387,6 +388,147 @@ constexpr Block chrominanceQuantTable = {{
     {99, 99, 99, 99, 99, 99, 99, 99},
     {99, 99, 99, 99, 99, 99, 99, 99}
 }};
+
+void writeHuffmanTable(BitWriter& w, const HuffmanTable& table) {
+    // Count the bitlen frequencies 
+    std::array<int, 32> bitlen_freq;
+    for (auto [k,v]: table) {
+        auto bitlen = v.second;
+        bitlen_freq[bitlen]++;
+    }
+
+    // Write frequencies of bitlengths in header
+    for (int i = 1; i <= 16; i++) {
+        auto freq = bitlen_freq[i];
+        w.write(freq, 8);
+    }
+
+    // Write corresponding codes in order of incresing bitlengths
+    for (int i = 1; i <= 16; i++) {
+        for (auto [k,v]: table) {
+            auto [bitlen, code] = v;
+            if (i == bitlen) {
+                w.write(code, bitlen);
+            }
+        }
+    }
+}
+
+void writeJpegHeader() {
+    std::ofstream file("test.jpeg", std::ofstream::binary);
+    
+    // The structure of JPEG header:
+    // +-----------------+
+    // | SOI Marker      | Start of Image - Marks the beginning of the JPEG file
+    // | (0xFFD8)        |
+    // +-----------------+
+    // | APP0 Marker     | Application Marker - Usually contains JFIF or Exif metadata
+    // | (0xFFE0)        |
+    // |  - Identifier   |   (e.g., "JFIF\0")
+    // |  - Version      |   (e.g., 1.01)
+    // |  - Density Info |   (pixel density and aspect ratio)
+    // |  - Thumbnail    |   (optional thumbnail image)
+    // +-----------------+
+    // | DQT Marker      | Define Quantization Table - Stores quantization tables
+    // | (0xFFDB)        |   (Used for compressing image data)
+    // |  - Table Info   |
+    // |  - Quant. Data  |
+    // +-----------------+
+    // | SOF Marker      | Start of Frame - Indicates the start of image data
+    // | (0xFFC0)        |   (Baseline DCT in most JPEGs)
+    // |  - Data Format  |
+    // |  - Image Size   |   (height and width in pixels)
+    // |  - Components   |   (e.g., Y, Cb, Cr for color channels)
+    // +-----------------+
+    // | DHT Marker      | Define Huffman Table - Stores Huffman encoding tables
+    // | (0xFFC4)        |   (Used for encoding the compressed image data)
+    // |  - Table Info   |
+    // |  - Huffman Data |
+    // +-----------------+
+    // | SOS Marker      | Start of Scan - Marks the start of encoded image data
+    // | (0xFFDA)        |   (contains compressed image data)
+    // |  - Component IDs|
+    // |  - Compression  |
+    // |  - Data Stream  |
+    // +-----------------+
+    // | Image Data      | Encoded Image Data - Compressed image data
+    // | (Compressed     |   (Uses Huffman coding and quantization)
+    // |  Bytes)         |
+    // +-----------------+
+    // | EOI Marker      | End of Image - Marks the end of the JPEG file
+    // | (0xFFD9)        |
+    // +-----------------+
+
+    BitWriter jpegHeaderWriter;
+
+    // SOI Marker (Start of Image)
+    jpegHeaderWriter.write(0xFFD8, 16);  // SOI marker, 16 bits
+
+    // APP0 Marker (Application Marker for metadata, e.g., JFIF or Exif)
+    jpegHeaderWriter.write(0xFFE0, 16);      // APP0 marker, 16 bits
+    jpegHeaderWriter.write(0x0010, 16);      // Length of APP0 segment, 16 bits (example length)
+    jpegHeaderWriter.write(0x4A464946, 32);  // "JFIF" identifier, 32 bits (ASCII: 'JFIF')
+    jpegHeaderWriter.write(0x00, 8);         // Null terminator for identifier, 8 bits
+    jpegHeaderWriter.write(0x0101, 16);      // JFIF version (e.g., 1.1), 16 bits
+    jpegHeaderWriter.write(0x01, 8);         // Density units, 8 bits (1 for DPI)
+    jpegHeaderWriter.write(0x0048, 16);      // X density, 16 bits (example value)
+    jpegHeaderWriter.write(0x0048, 16);      // Y density, 16 bits (example value)
+    jpegHeaderWriter.write(0x00, 8);         // Thumbnail width, 8 bits (0 for none)
+    jpegHeaderWriter.write(0x00, 8);         // Thumbnail height, 8 bits (0 for none)
+
+    // Omit DQT Marker (do not define custom quantization table)
+
+    // SOF Marker (Start of Frame, Baseline DCT)
+    jpegHeaderWriter.write(0xFFC0, 16);  // SOF marker, 16 bits
+    jpegHeaderWriter.write(0x0011, 16);  // Length of SOF segment, 16 bits (example length)
+    jpegHeaderWriter.write(0x08, 8);     // Precision, 8 bits (usually 8 for baseline JPEG)
+    jpegHeaderWriter.write(0x0400, 16);  // Height, 16 bits (example: 1024)
+    jpegHeaderWriter.write(0x0400, 16);  // Width, 16 bits (example: 1024)
+    jpegHeaderWriter.write(0x03, 8);     // Number of components, 8 bits (3 for Y, Cb, Cr)
+    // Component data for Y, Cb, Cr (example values)
+    jpegHeaderWriter.write(0x01, 8);     // Component ID for Y, 8 bits
+    jpegHeaderWriter.write(0x22, 8);     // Sampling factors for Y (4 bits horizontal, 4 bits vertical)
+    jpegHeaderWriter.write(0x00, 8);     // Quantization table ID for Y, 8 bits
+    jpegHeaderWriter.write(0x02, 8);     // Component ID for Cb, 8 bits
+    jpegHeaderWriter.write(0x11, 8);     // Sampling factors for Cb, 8 bits
+    jpegHeaderWriter.write(0x01, 8);     // Quantization table ID for Cb, 8 bits
+    jpegHeaderWriter.write(0x03, 8);     // Component ID for Cr, 8 bits
+    jpegHeaderWriter.write(0x11, 8);     // Sampling factors for Cr, 8 bits
+    jpegHeaderWriter.write(0x01, 8);     // Quantization table ID for Cr, 8 bits
+
+    // DHT Marker (Define Huffman Table)
+    jpegHeaderWriter.write(0xFFC4, 16);  // DHT marker, 16 bits
+    jpegHeaderWriter.write(1 + 16 + 1337, 16);  // Length of DHT segment, 16 bits (example length)
+    jpegHeaderWriter.write(0b10000, 8);     // Table Class (DC=0) and Table ID, 8 bits
+    writeHuffmanTable(jpegHeaderWriter, acLuminanceHuffmanTable);
+
+    // dcChrominance, 0b00001
+    // dcLuminance,   0b00010
+    // acChrominance, 0b10011
+
+    // SOS Marker (Start of Scan)
+    jpegHeaderWriter.write(0xFFDA, 16);  // SOS marker, 16 bits
+    jpegHeaderWriter.write(0x000C, 16);  // Length of SOS segment, 16 bits
+    jpegHeaderWriter.write(0x03, 8);     // Number of components, 8 bits
+    // Component data (for each component in scan)
+    jpegHeaderWriter.write(0x01, 8);     // Component ID (Y), 8 bits
+    jpegHeaderWriter.write(0x00, 8);     // DC and AC Huffman table selector for Y, 8 bits
+    jpegHeaderWriter.write(0x02, 8);     // Component ID (Cb), 8 bits
+    jpegHeaderWriter.write(0x11, 8);     // DC and AC Huffman table selector for Cb, 8 bits
+    jpegHeaderWriter.write(0x03, 8);     // Component ID (Cr), 8 bits
+    jpegHeaderWriter.write(0x11, 8);     // DC and AC Huffman table selector for Cr, 8 bits
+    jpegHeaderWriter.write(0x00, 8);     // Start of spectral selection, 8 bits
+    jpegHeaderWriter.write(0x3F, 8);     // End of spectral selection, 8 bits
+    jpegHeaderWriter.write(0x00, 8);     // Successive approximation, 8 bits
+
+
+    // Image Data (compressed binary data for image content, Huffman coded)
+    // In real JPEG files, this would contain the compressed data following the Huffman coding.
+    // For this example, this part is omitted.
+
+    // EOI Marker (End of Image)
+    jpegHeaderWriter.write(0xFFD9, 16);  // EOI marker, 16 bits
+}
 
 static void quantize(Block& block, const Block& quantTable) {
     for (int x = 0; x < 8; x++) {
