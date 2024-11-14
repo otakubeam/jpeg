@@ -656,7 +656,249 @@ void writeHuffmanTable(BitWriter& w, const HuffmanTable& table, int id) {
     }
 }
 
+struct DecodeTable {
+    int id; // ID of the Huffman table (e.g., 0 for DC, 1 for AC)
+    int type; // 0 for Luminance, 1 for Chrominance
+    std::unordered_map<int, uint8_t> code_to_symbol; // Maps Huffman codes to symbols
+    // (symbols are packed {run_length, size} pairs)
+
+    // Add a new code-symbol pair to the table
+    void addCodeSymbol(int code, uint8_t symbol) {
+        code_to_symbol[code] = symbol;
+    }
+
+    // Unpack the symbol to {run_length, size}
+    auto getUnpackedSymbol(int code) const -> std::pair<int, int> {
+        uint8_t s = getSymbol(code);
+        return {s >> 4, s & 0b1111};
+    }
+
+    // Lookup a symbol by Huffman code
+    int getSymbol(int code) const {
+        auto it = code_to_symbol.find(code);
+        if (it != code_to_symbol.end()) {
+            return it->second;
+        } else {
+            throw std::out_of_range("Code not found in Huffman table");
+        }
+    }
+
+    // Check if a code exists in the table
+    bool hasCode(int code) const {
+        return code_to_symbol.find(code) != code_to_symbol.end();
+    }
+};
+
+void decodeHuffmanTable(BitReader& r, DecodeTable& t) {
+    // Read the DHT segment length
+    [[maybe_unused]] int length = r.read(16);
+
+    // Read the table ID (8 bits)
+    int table_id = r.read(8);
+    t.id = table_id & 0b1111;
+    t.type = (table_id >> 4) & 0b1111;
+
+    // Read the symbol frequencies for each bit length (16 bytes)
+    std::array<int, 17> bitlen_freq = {0};
     for (int i = 1; i <= 16; i++) {
+        bitlen_freq[i] = r.read(8);
+    }
+
+    // Generate the Huffman codes
+    int code = 0;
+    for (int bitlen = 1; bitlen <= 16; bitlen++) {
+        int num_symbols = bitlen_freq[bitlen];
+        for (int i = 0; i < num_symbols; i++) {
+            uint8_t symbol = r.read(8);
+            t.addCodeSymbol(code, symbol);
+            code++;
+        }
+        code <<= 1; // Shift code to the left for the next bit length
+    }
+}
+
+auto decodeSymbol(BitReader& r, const DecodeTable& tab) -> std::pair<int, int> {
+    int code = 0;
+    while (!tab.hasCode(code)) {
+        code <<= 1;
+        code |= r.read(1);
+    }
+    return tab.getUnpackedSymbol(code);
+}
+
+// 8x8 block
+struct MCU {
+    int DC = 0;
+    int AC[63] = {0};
+
+    explicit operator Block() const {
+        Block block;
+        auto it = block.begin();
+        
+        // First value is DC
+        *it = static_cast<double>(DC);
+        ++it;
+        
+        // Remaining 63 values are AC (traverse in zig-zag order)
+        for (int i = 0; i < 63; ++i, ++it) {
+            *it = static_cast<double>(AC[i]);
+        }
+        
+        return block;
+    } 
+};
+
+MCU blockToMCU(const Block& block) {
+    MCU mcu;
+    auto it = block.begin();
+    
+    // First value is DC
+    mcu.DC = static_cast<int>(*it);
+    ++it;
+    
+    // Remaining 63 values are AC 
+    for (int i = 0; i < 63; ++i, ++it) {
+        mcu.AC[i] = static_cast<int>(*it);
+    }
+    
+    return mcu;
+}
+
+
+struct ImageBuffer {
+    uint16_t width, height;
+    std::vector<uint8_t> data; // Stores RGB values in a flat array
+
+    ImageBuffer(uint16_t w, uint16_t h) : width(w), height(h), data(w * h * 3) {}
+
+    void setPixel(int x, int y, uint8_t R, uint8_t G, uint8_t B) {
+        int index = (y * width + x) * 3;
+        data[index] = R;
+        data[index + 1] = G;
+        data[index + 2] = B;
+    }
+
+    const uint8_t* getPixelData() const {
+        return data.data();
+    }
+};
+
+class MinCodedUnitDecoder {
+public:
+    MinCodedUnitDecoder(BitReader& r__) : r{r__} {}
+
+    MCU decodeMCU(const DecodeTable& dcTable, const DecodeTable& acTable) { 
+        MCU result;
+        
+        // Read the category (the number of bits diff occupies)
+        auto [cat, z] = decodeSymbol(r, dcTable);
+        auto dcDiff = r.read(cat);
+        result.DC = dcPredictor = dcPredictor + dcDiff;
+
+        for (int i = 0; i < 63; i++) {
+            auto [run_length, size] = decodeSymbol(r, acTable);
+            if (run_length == 0 && size == 0) {
+                break; // End of Block (EOB)
+            }
+            i += run_length; // Skip zeroes
+            if (size > 0) {
+                result.AC[i] = r.read(size);
+            }
+        }
+
+        return result;
+    }
+
+private:
+    BitReader& r;
+    int dcPredictor = 0;
+};
+
+
+struct JPEGHeader {
+    uint16_t width;         // Image width
+    uint16_t height;        // Image height
+    uint8_t num_components;  // Number of color components (typically 3 for Y, Cb, Cr)
+
+    struct ComponentInfo {
+        uint8_t id;            // Component ID (1 for Y, 2 for Cb, 3 for Cr)
+        uint8_t sampling_factor; // Sampling factor (e.g., 4:2:0)
+        uint8_t quant_table_id;  // ID of the quantization table used
+    };
+    std::array<ComponentInfo, 3> components; // Information for each component (Y, Cb, Cr)
+};
+
+void decodeHeader(BitReader& r, JPEGHeader& header) {
+    // Read the length of the SOF segment (16 bits)
+    [[maybe_unused]] int length = r.read(16);
+
+    // Read the data precision (usually 8 bits)
+    [[maybe_unused]] uint8_t precision = r.read(8);
+
+    // Read the image height and width (each 16 bits)
+    header.height = r.read(16);
+    header.width = r.read(16);
+
+    // Read the number of components (typically 3 for Y, Cb, Cr)
+    header.num_components = r.read(8);
+
+    // Iterate over each component in the SOF marker
+    for (uint8_t i = 0; i < header.num_components; ++i) {
+        // Read the component ID (1 byte, e.g., 1 for Y, 2 for Cb, 3 for Cr)
+        uint8_t componentId = r.read(8);
+
+        // Read the sampling factors (1 byte, 4 bits each for horizontal and vertical)
+        uint8_t samplingFactors = r.read(8);
+        uint8_t horizontalSampling = (samplingFactors >> 4) & 0x0F;
+        uint8_t verticalSampling = samplingFactors & 0x0F;
+
+        // Combine sampling factors into a single byte
+        uint8_t samplingFactor = (horizontalSampling << 4) | verticalSampling;
+
+        // Read the quantization table ID for the component (1 byte)
+        uint8_t quantTableId = r.read(8);
+
+        // Populate the component information in the header
+        header.components[i] = {
+            componentId,          // Component ID
+            samplingFactor,       // Sampling factor (packed as horizontal and vertical)
+            quantTableId          // Quantization table ID
+        };
+    }
+}
+
+struct ScanHeader {
+    uint8_t numComponents;
+    struct ComponentSelector {
+        uint8_t id;
+        uint8_t dcTable; // DC Huffman table selector
+        uint8_t acTable; // AC Huffman table selector
+    };
+    std::vector<ComponentSelector> components;
+    uint8_t spectralStart;
+    uint8_t spectralEnd;
+    uint8_t successiveApprox;
+};
+
+void decodeSOS(BitReader& r, ScanHeader& scanHeader) {
+    [[maybe_unused]] int length = r.read(16); // Length of the SOS segment
+    scanHeader.numComponents = r.read(8); // Number of components in scan
+
+    // Read each component's ID and table selectors
+    for (int i = 0; i < scanHeader.numComponents; ++i) {
+        uint8_t componentId = r.read(8);
+        uint8_t tableSelector = r.read(8);
+        uint8_t dcTable = (tableSelector >> 4) & 0x0F; // DC table selector (4 bits)
+        uint8_t acTable = tableSelector & 0x0F; // AC table selector (4 bits)
+        
+        scanHeader.components.push_back({ componentId, dcTable, acTable });
+    }
+
+    // Spectral selection and successive approximation (usually 0, 63, 0 for baseline JPEG)
+    scanHeader.spectralStart = r.read(8);
+    scanHeader.spectralEnd = r.read(8);
+    scanHeader.successiveApprox = r.read(8);
+}
 
 enum class QuantizeMode { Quantize, Dequantize };
 
@@ -739,6 +981,46 @@ Block IDCT(const Block& block) {
 
     return result;
 }
+
+void decodeJpegStream(BitReader& r) {
+    JPEGHeader header;
+    decodeHeader(r, header);
+
+    ImageBuffer imageBuffer(header.width, header.height);
+
+    DecodeTable tables[2][2];
+    for (int i = 0; i < 4; i++) {
+        DecodeTable tab;
+        decodeHuffmanTable(r, tab);
+        tables[tab.id][tab.type] = std::move(tab);
+    }
+
+    DecodeTable acLuminance, dcLuminance, acChrominance, dcChrominance;
+    decodeHuffmanTable(r, acLuminance), decodeHuffmanTable(r, dcLuminance);
+    decodeHuffmanTable(r, acChrominance), decodeHuffmanTable(r, dcChrominance);
+
+    ScanHeader scan_header;
+    decodeSOS(r, scan_header);
+
+    // Loop through each MCU in the image
+    for (int mcuRow = 0; mcuRow < header.height; mcuRow += 8) {
+        for (int mcuCol = 0; mcuCol < header.width; mcuCol += 8) {
+            for (const auto& component : scan_header.components) {
+                // Choose the correct Huffman and quantization tables
+                DecodeTable& dcTable = (component.id == 1) ? dcLuminance : dcChrominance;
+                DecodeTable& acTable = (component.id == 1) ? acLuminance : acChrominance;
+                const Block& quantTable = (component.id == 1) ? luminanceQuantTable : chrominanceQuantTable;
+
+                // Decode the MCU
+                MinCodedUnitDecoder MCU_decoder(r);
+                MCU mcu = MCU_decoder.decodeMCU(dcTable, acTable);
+
+                Block unzigzag_mcu = Block(mcu);
+                quantize(unzigzag_mcu, quantTable, QuantizeMode::Dequantize);
+                Block inflated_mcu = IDCT(unzigzag_mcu);
+
+                // Perform inverse DCT and store pixel data
+                // imageBuffer.storeBlock(mcuRow, mcuCol, component.id, inflated_mcu);
             }
         }
     }
