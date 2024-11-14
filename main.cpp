@@ -657,10 +657,88 @@ void writeHuffmanTable(BitWriter& w, const HuffmanTable& table, int id) {
 }
 
     for (int i = 1; i <= 16; i++) {
-        for (auto [k,v]: table) {
-            auto [bitlen, code] = v;
-            if (i == bitlen) {
-                w.write(code, bitlen);
+
+enum class QuantizeMode { Quantize, Dequantize };
+
+void quantize(Block& block, const Block& quantTable, QuantizeMode mode) {
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            auto& elem = block.pixels[x][y];
+            const auto& quant = quantTable.pixels[x][y];
+            
+            if (mode == QuantizeMode::Quantize) {
+                elem = std::round(elem / quant);
+            } else {
+                elem = elem * quant;
+            }
+        }
+    }
+}
+
+// Helper function to compute the sum for DCT
+static double sum(const Block& block, int u, int v) {
+    double res = 0;
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            double a1 = ((2 * x + 1) * u * Pi) / 16;
+            double a2 = ((2 * y + 1) * v * Pi) / 16;
+            res += block.pixels[x][y] * cos(a1) * cos(a2);
+        }
+    }
+    return res;
+}
+
+// Perform the 8x8 DCT on the input block
+Block DCT(const Block& block) {
+    Block result;
+
+    // Calculate the DCT for each frequency coefficient (k, m)
+    for (int u = 0; u < 8; u++) {
+        for (int v = 0; v < 8; v++) {
+            double res = sum(block, u, v) / 4.0;
+
+            // Apply the normalization factor
+            if (u == 0) res /= std::sqrt(2);
+            if (v == 0) res /= std::sqrt(2);
+
+            result.pixels[u][v] = res;
+        }
+    }
+
+    return result;
+}
+
+// Helper function for the inverse DCT to apply the cosine transform
+double inverseSum(const Block& block, int x, int y) {
+    double res = 0;
+    for (int u = 0; u < 8; u++) {
+        for (int v = 0; v < 8; v++) {
+            double a1 = ((2 * x + 1) * u * Pi) / 16;
+            double a2 = ((2 * y + 1) * v * Pi) / 16;
+            double coef = block.pixels[u][v] * cos(a1) * cos(a2);
+
+            // Apply normalization factor
+            if (u == 0) coef /= sqrt(2);
+            if (v == 0) coef /= sqrt(2);
+
+            res += coef;
+        }
+    }
+    return res;
+}
+
+// IDCT function
+Block IDCT(const Block& block) {
+    Block result;
+
+    for (int x = 0; x < 8; x++) {
+        for (int y = 0; y < 8; y++) {
+            result.pixels[x][y] = inverseSum(block, x, y) / 4.0;
+        }
+    }
+
+    return result;
+}
             }
         }
     }
@@ -778,80 +856,6 @@ void writeJpegHeader() {
     jpegHeaderWriter.write(0xFFD9, 16);  // EOI marker, 16 bits
 }
 
-static void quantize(Block& block, const Block& quantTable) {
-    for (int x = 0; x < 8; x++) {
-        for (int y = 0; y < 8; y++) {
-            auto& elem = block.pixels[x][y];
-            const auto& quant = quantTable.pixels[x][y];
-            elem = int(elem / quant);
-        }
-    }
-}
-
-// Helper function to compute the sum for DCT
-static double sum(const Block& block, int u, int v) {
-    double res = 0;
-    for (int x = 0; x < 8; x++) {
-        for (int y = 0; y < 8; y++) {
-            double a1 = ((2 * x + 1) * u * Pi) / 16;
-            double a2 = ((2 * y + 1) * v * Pi) / 16;
-            res += block.pixels[x][y] * cos(a1) * cos(a2);
-        }
-    }
-    return res;
-}
-
-// Perform the 8x8 DCT on the input block
-Block DCT(const Block& block) {
-    Block result;
-
-    // Calculate the DCT for each frequency coefficient (k, m)
-    for (int u = 0; u < 8; u++) {
-        for (int v = 0; v < 8; v++) {
-            double res = sum(block, u, v) / 4.0;
-
-            // Apply the normalization factor
-            if (u == 0) res /= std::sqrt(2);
-            if (v == 0) res /= std::sqrt(2);
-
-            result.pixels[u][v] = res;
-        }
-    }
-
-    return result;
-}
-
-// Helper function for the inverse DCT to apply the cosine transform
-double inverseSum(const Block& block, int x, int y) {
-    double res = 0;
-    for (int u = 0; u < 8; u++) {
-        for (int v = 0; v < 8; v++) {
-            double a1 = ((2 * x + 1) * u * Pi) / 16;
-            double a2 = ((2 * y + 1) * v * Pi) / 16;
-            double coef = block.pixels[u][v] * cos(a1) * cos(a2);
-
-            // Apply normalization factor
-            if (u == 0) coef /= sqrt(2);
-            if (v == 0) coef /= sqrt(2);
-
-            res += coef;
-        }
-    }
-    return res;
-}
-
-// IDCT function
-Block IDCT(const Block& block) {
-    Block result;
-
-    for (int x = 0; x < 8; x++) {
-        for (int y = 0; y < 8; y++) {
-            result.pixels[x][y] = inverseSum(block, x, y) / 4.0;
-        }
-    }
-
-    return result;
-}
 
 // Test function
 void printBlock(const Block &block) {
@@ -886,7 +890,7 @@ int main() {
     printBlock(dctBlock);
 
 
-    quantize(dctBlock, luminanceQuantTable);
+    quantize(dctBlock, luminanceQuantTable, QuantizeMode::Quantize);
     // quantize(dctBlock, chrominanceQuantTable);
     // quantize(dctBlock, chrominanceQuantTable);
 
