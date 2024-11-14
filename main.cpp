@@ -1,21 +1,39 @@
-#include <iostream>
 #include <array>
 #include <vector>
+#include <unordered_map>
+#include <iostream>
 #include <utility>
-
+#include <fstream>
 
 constexpr double Pi = 3.14159265358979323846;
 
 struct Block {
     double pixels[8][8];
 
-  class ZigZagIterator {
-  public:
-    ZigZagIterator(Block& blk__, std::size_t index__ = 0): blk{blk__}, index(index__) {}
+    // Forward declaration of both iterator types
+    template<bool IsConst>
+    class ZigZagIteratorImpl;
 
-    typedef double      value_type;
-    typedef value_type& reference;
-    typedef value_type* pointer;
+    // Type aliases for convenience
+    using iterator = ZigZagIteratorImpl<false>;
+    using const_iterator = ZigZagIteratorImpl<true>;
+
+    template<bool IsConst>
+    class ZigZagIteratorImpl {
+  public:
+        using BlockType = typename std::conditional<IsConst, const Block, Block>::type;
+        using value_type = double;
+        using reference = typename std::conditional<IsConst, const value_type&, value_type&>::type;
+        using pointer = typename std::conditional<IsConst, const value_type*, value_type*>::type;
+
+        ZigZagIteratorImpl(BlockType& blk__, std::size_t index__ = 0)
+            : blk{blk__}, index(index__) {}
+
+        // Allow conversion from non-const to const iterator
+        template<bool WasConst>
+        ZigZagIteratorImpl(const ZigZagIteratorImpl<WasConst>& other,
+            typename std::enable_if<IsConst || !WasConst>::type* = nullptr)
+            : blk(other.blk), index(other.index) {}
 
     // Dereference Operators
     pointer operator->() const { 
@@ -25,18 +43,32 @@ struct Block {
     reference operator*() const { return *operator->(); }
 
     // Pre-increment
-    ZigZagIterator& operator++() { ++index; return *this; }
+        ZigZagIteratorImpl& operator++() { ++index; return *this; }
 
-    bool operator==(ZigZagIterator right) const { return &right.blk == &blk && right.index == index; }
-    bool operator!=(ZigZagIterator right) const { return !operator==(right); }
+        // Post-increment
+        ZigZagIteratorImpl operator++(int) {
+            ZigZagIteratorImpl tmp(*this);
+            ++index;
+            return tmp;
+        }
 
-    reference operator[](std::size_t idx) {
+        template<bool OtherConst>
+        bool operator==(const ZigZagIteratorImpl<OtherConst>& right) const {
+            return &right.blk == &blk && right.index == index;
+        }
+
+        template<bool OtherConst>
+        bool operator!=(const ZigZagIteratorImpl<OtherConst>& right) const {
+            return !operator==(right);
+        }
+
+        reference operator[](std::size_t idx) const {
         auto [row, col] = zigzagOrder[idx];
         return blk.pixels[row][col];
     }
 
   private:
-    Block& blk;
+        BlockType& blk;
     std::size_t index;
 
     static constexpr std::array<std::pair<int, int>, 64> zigzagOrder = {
@@ -48,12 +80,22 @@ struct Block {
          {3, 5}, {2, 6}, {1, 7}, {2, 7}, {3, 6}, {4, 5}, {5, 4}, {6, 3},
          {7, 2}, {7, 3}, {6, 4}, {5, 5}, {4, 6}, {3, 7}, {4, 7}, {5, 6},
          {6, 5}, {7, 4}, {7, 5}, {6, 6}, {5, 7}, {6, 7}, {7, 6}, {7, 7}}};
+
+        // Make other instantiations friends
+        template<bool> friend class ZigZagIteratorImpl;
   };
 
+    // Non-const iteration
+    iterator begin() { return iterator(*this); }
+    iterator end() { return iterator(*this, 64); }
   
-    ZigZagIterator begin() { return ZigZagIterator(*this); }
-    ZigZagIterator end() { return ZigZagIterator(*this, 64); }
+    // Const iteration
+    const_iterator begin() const { return const_iterator(*this); }
+    const_iterator end() const { return const_iterator(*this, 64); }
 
+    // Const iteration through cbegin/cend
+    const_iterator cbegin() const { return const_iterator(*this); }
+    const_iterator cend() const { return const_iterator(*this, 64); }
 };
 
 
