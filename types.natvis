@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+  <Type Name="DecodeTable">
+    <DisplayString>ID={id} Type={type}</DisplayString>
+    <Expand>
+      <Item Name="ID">id</Item>
+      <Item Name="Type">type</Item>
+      <Item Name="Is Luminance">type == 0</Item>
+      <CustomListItems>
+        <Variable Name="head" InitialValue="code_to_symbol._Mypair._Myval2._Myhead->_Parent"/>
+        <Variable Name="size" InitialValue="code_to_symbol._Mypair._Myval2._Mysize"/>
+        <Size>size</Size>
+        <Loop>
+          <If Condition="head != 0">
+            <Item Name="[{head->_Myval.first}]">
+              "Code: {head->_Myval.first}, Symbol: {head->_Myval.second} (Run:{(int)(head->_Myval.second >> 4)}, Size:{(int)(head->_Myval.second &amp; 0xF)})"
+            </Item>
+            <Exec>head = head->_Right</Exec>
+          </If>
+        </Loop>
+      </CustomListItems>
+    </Expand>
+  </Type>
+</AutoVisualizer>

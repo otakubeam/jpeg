@@ -1,7 +1,10 @@
+#include <cassert>
 #include <cstdint>
+#include <ios>
 #include <map>
 #include <array>
 #include <numeric>
+#include <stdlib.h>
 #include <unordered_map>
 #include <vector>
 #include <iostream>
@@ -108,11 +111,11 @@ using AC = int;
 using RunLengthResultAC = std::vector<std::pair<int, AC>>;
 
 auto performRle(Block blk) -> RunLengthResultAC {
-    std::size_t zero_count = 0;
+    int zero_count = 0;
     RunLengthResultAC result;
 
     for (auto elem_double : blk) {
-        if (auto elem = elem_double; elem == 0) {
+        if (int elem = (int)elem_double; elem == 0) {
             zero_count++; 
         } else {
             result.emplace_back(zero_count, elem);
@@ -177,13 +180,19 @@ private:
 
 class BitReader {
 public:
-    using StorageType = std::size_t;
+    using StorageType = std::uint8_t;
 
     // Constructor takes a buffer to read from
-    BitReader(const std::vector<StorageType>& buffer)
-        : buffer(buffer), store(0), bits_read(0), total_bits_read(0), buffer_index(0) {
+    BitReader(std::vector<StorageType> buffer__)
+        : buffer(std::move(buffer__)), store(0), bits_read(0), total_bits_read(0), buffer_index(0) {
         if (!buffer.empty()) {
             store = buffer[0];
+        }
+    }
+
+    void skipBytes(size_t num) {
+        for (int i = 0; i < num; i++) {
+            read(8);
         }
     }
 
@@ -223,14 +232,163 @@ public:
     }
 
 private:
-    const std::vector<StorageType>& buffer;
+    std::vector<StorageType> buffer;
     StorageType store;
     size_t bits_read;
     size_t total_bits_read;
     size_t buffer_index;
 };
 
-using HuffmanCode = std::pair<size_t, size_t>;
+struct ImageBuffer {
+    uint16_t width, height;
+    std::vector<uint8_t> data; // Stores RGB values in a flat array
+
+    ImageBuffer(uint16_t w, uint16_t h) : width(w), height(h), data(w * h * 3) {}
+
+    void setPixel(int x, int y, uint8_t R, uint8_t G, uint8_t B) {
+        const auto& [r, g, b] = (*this)[x][y];
+        r = R, g = G, b = B;
+    }
+
+    template <typename T>
+    struct PixelView {
+        T& R;
+        T& G;
+        T& B;
+
+        T& operator[](uint8_t idx) {
+            switch (idx) {
+            case 0: return R;
+            case 1: return G;
+            case 2: return B;
+            default: abort();
+            }
+        }
+
+        PixelView(T& r, T& g, T& b) : R(r), G(g), B(b) {}
+    };
+    
+
+    template <typename T>
+    struct RowView {
+        RowView(const ImageBuffer& img__, T* row_start__) : img(img__), row_start(row_start__) {}
+
+        PixelView<T> operator[](int col_idx) const {
+            static T zero = 0;
+            static PixelView<T> zero_pixel_view(zero, zero, zero);
+            if (col_idx >= img.width) {
+                return zero_pixel_view;
+            }
+            T* pixel_start = row_start + col_idx * 3;
+            return PixelView<T>(pixel_start[0], pixel_start[1], pixel_start[2]);
+        }
+
+        const ImageBuffer& img;
+        T* row_start;
+    };
+
+
+    auto operator[](int row_idx) -> RowView<uint8_t> {
+        static RowView<uint8_t> zero_row_view(*this, nullptr);
+        return row_idx >= height ? zero_row_view : RowView<uint8_t>(*this, data.data() + width * row_idx * 3);
+    }
+
+    auto operator[](int row_idx) const -> RowView<const uint8_t> {
+        static RowView<const uint8_t> zero_row_view(*this, nullptr);
+        return row_idx >= height ? zero_row_view : RowView<const uint8_t>(*this, data.data() + width * row_idx * 3);
+    }
+};
+
+// Function to write the ImageBuffer to a BMP file for visualization
+void writeBMP(const ImageBuffer& img, const std::string& filename) {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Cannot create BMP file: " + filename);
+    }
+
+    // BMP Header
+    uint32_t fileSize = 54 + img.width * img.height * 3;
+    uint16_t bfType = 0x4D42; // 'BM'
+    uint32_t bfSize = fileSize;
+    uint32_t bfReserved = 0;
+    uint32_t bfOffBits = 54;
+
+    // DIB Header (BITMAPINFOHEADER)
+    uint32_t biSize = 40;
+    int32_t biWidth = img.width;
+    int32_t biHeight = img.height;
+    uint16_t biPlanes = 1;
+    uint16_t biBitCount = 24;
+    uint32_t biCompression = 0;
+    uint32_t biSizeImage = img.width * img.height * 3;
+    int32_t biXPelsPerMeter = 0;
+    int32_t biYPelsPerMeter = 0;
+    uint32_t biClrUsed = 0;
+    uint32_t biClrImportant = 0;
+
+    // Write BMP Header
+    file.write(reinterpret_cast<char*>(&bfType), sizeof(bfType));
+    file.write(reinterpret_cast<char*>(&bfSize), sizeof(bfSize));
+    file.write(reinterpret_cast<char*>(&bfReserved), sizeof(bfReserved));
+    file.write(reinterpret_cast<char*>(&bfOffBits), sizeof(bfOffBits));
+
+    // Write DIB Header
+    file.write(reinterpret_cast<char*>(&biSize), sizeof(biSize));
+    file.write(reinterpret_cast<char*>(&biWidth), sizeof(biWidth));
+    file.write(reinterpret_cast<char*>(&biHeight), sizeof(biHeight));
+    file.write(reinterpret_cast<char*>(&biPlanes), sizeof(biPlanes));
+    file.write(reinterpret_cast<char*>(&biBitCount), sizeof(biBitCount));
+    file.write(reinterpret_cast<char*>(&biCompression), sizeof(biCompression));
+    file.write(reinterpret_cast<char*>(&biSizeImage), sizeof(biSizeImage));
+    file.write(reinterpret_cast<char*>(&biXPelsPerMeter), sizeof(biXPelsPerMeter));
+    file.write(reinterpret_cast<char*>(&biYPelsPerMeter), sizeof(biYPelsPerMeter));
+    file.write(reinterpret_cast<char*>(&biClrUsed), sizeof(biClrUsed));
+    file.write(reinterpret_cast<char*>(&biClrImportant), sizeof(biClrImportant));
+
+    // Write pixel data (BMP stores pixels bottom-to-top)
+    for (int y = img.height - 1; y >= 0; y--) {
+        for (int x = 0; x < img.width; x++) {
+            const auto& [R, G, B] = img[y][x];
+            file.write(reinterpret_cast<const char*>(&B), 1);
+            file.write(reinterpret_cast<const char*>(&G), 1);
+            file.write(reinterpret_cast<const char*>(&R), 1);
+        }
+    }
+}
+
+void getComponentsBlocks(ImageBuffer& img) {
+    auto make_block_for_comp = [&img](int comp, int x, int y){
+        Block block;
+        for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
+                block.pixels[i][j] = img[x + i][y + j][comp];
+            }
+        }
+        return block;
+    };
+
+    for (int i = 0; i < img.height; i+=8) {
+        for (int j = 0; j < img.width; j+=8) {
+            [[maybe_unused]] Block Rs = make_block_for_comp(0, i, j);
+            [[maybe_unused]] Block Gs = make_block_for_comp(1, i, j);
+            [[maybe_unused]] Block Bs = make_block_for_comp(2, i, j);
+        }
+    }
+}
+
+// Function to convert YCbCr to RGB
+void YCbCr_to_RGB(int Y, int Cb, int Cr, uint8_t& R, uint8_t& G, uint8_t& B) {
+    double r = Y + 1.402 * (Cr - 128);
+    double g = Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128);
+    double b = Y + 1.772 * (Cb - 128);
+
+    // Clamp the values to [0, 255]
+    R = static_cast<uint8_t>(std::min(std::max(int(std::round(r)), 0), 255));
+    G = static_cast<uint8_t>(std::min(std::max(int(std::round(g)), 0), 255));
+    B = static_cast<uint8_t>(std::min(std::max(int(std::round(b)), 0), 255));
+}
+
+using HuffmanCode = std::pair<int, int>;
 using HuffmanTable = std::map<std::pair<int, int>, HuffmanCode>;
 
 // Initialize the unordered_map with HuffmanCode structs
@@ -659,7 +817,9 @@ void writeHuffmanTable(BitWriter& w, const HuffmanTable& table, int id) {
 struct DecodeTable {
     int id; // ID of the Huffman table (e.g., 0 for DC, 1 for AC)
     int type; // 0 for Luminance, 1 for Chrominance
-    std::unordered_map<int, uint8_t> code_to_symbol; // Maps Huffman codes to symbols
+    bool isLuminance() const { return type == 0; } // New boolean field for testing
+    int code_to_symbol_size() const { return code_to_symbol.size(); }
+    std::map<int, uint8_t> code_to_symbol; // Maps Huffman codes to symbols
     // (symbols are packed {run_length, size} pairs)
 
     // Add a new code-symbol pair to the table
@@ -691,6 +851,9 @@ struct DecodeTable {
 
 void decodeHuffmanTable(BitReader& r, DecodeTable& t) {
     // Read the DHT segment length
+    [[maybe_unused]] int marker = r.read(16);
+    (void)t.code_to_symbol_size();
+    assert(marker == 0xFFC4);
     [[maybe_unused]] int length = r.read(16);
 
     // Read the table ID (8 bits)
@@ -765,24 +928,6 @@ MCU blockToMCU(const Block& block) {
 }
 
 
-struct ImageBuffer {
-    uint16_t width, height;
-    std::vector<uint8_t> data; // Stores RGB values in a flat array
-
-    ImageBuffer(uint16_t w, uint16_t h) : width(w), height(h), data(w * h * 3) {}
-
-    void setPixel(int x, int y, uint8_t R, uint8_t G, uint8_t B) {
-        int index = (y * width + x) * 3;
-        data[index] = R;
-        data[index + 1] = G;
-        data[index + 2] = B;
-    }
-
-    const uint8_t* getPixelData() const {
-        return data.data();
-    }
-};
-
 class MinCodedUnitDecoder {
 public:
     MinCodedUnitDecoder(BitReader& r__) : r{r__} {}
@@ -828,7 +973,32 @@ struct JPEGHeader {
     std::array<ComponentInfo, 3> components; // Information for each component (Y, Cb, Cr)
 };
 
+bool skipToSOF(BitReader &r) {
+    while (auto byte1 = r.read(8)) {
+        if (byte1 == 0xFF) {
+            auto byte2 = r.read(8);
+
+            // Check if we found a Start of Frame (SOF) marker
+            if (byte2 >= 0xC0 && byte2 <= 0xC3) {
+                std::cout << "Found Start of Frame (SOF) marker: 0xFF" << std::hex << static_cast<int>(byte2) << std::endl;
+                return true;
+            }
+
+            // Skip non-SOF segments (like APP, DQT, etc.)
+            if (byte2 != 0xD8 && byte2 != 0xD9) { // Exclude SOI and EOI markers
+                uint16_t segmentLength = r.read(16);
+                r.skipBytes(segmentLength - 2);
+            }
+        }
+    }
+    std::cerr << "SOF marker not found in the file." << std::endl;
+    return false;
+}
+
 void decodeHeader(BitReader& r, JPEGHeader& header) {
+    // Ignore the initial JFIF part (header, quants)
+    skipToSOF(r);
+
     // Read the length of the SOF segment (16 bits)
     [[maybe_unused]] int length = r.read(16);
 
@@ -918,7 +1088,7 @@ void quantize(Block& block, const Block& quantTable, QuantizeMode mode) {
 }
 
 // Helper function to compute the sum for DCT
-static double sum(const Block& block, int u, int v) {
+static double sumDCT(const Block& block, int u, int v) {
     double res = 0;
     for (int x = 0; x < 8; x++) {
         for (int y = 0; y < 8; y++) {
@@ -937,7 +1107,7 @@ Block DCT(const Block& block) {
     // Calculate the DCT for each frequency coefficient (k, m)
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) {
-            double res = sum(block, u, v) / 4.0;
+            double res = sumDCT(block, u, v) / 4.0;
 
             // Apply the normalization factor
             if (u == 0) res /= std::sqrt(2);
@@ -951,7 +1121,7 @@ Block DCT(const Block& block) {
 }
 
 // Helper function for the inverse DCT to apply the cosine transform
-double inverseSum(const Block& block, int x, int y) {
+static double inverseSumDCT(const Block& block, int x, int y) {
     double res = 0;
     for (int u = 0; u < 8; u++) {
         for (int v = 0; v < 8; v++) {
@@ -975,7 +1145,7 @@ Block IDCT(const Block& block) {
 
     for (int x = 0; x < 8; x++) {
         for (int y = 0; y < 8; y++) {
-            result.pixels[x][y] = inverseSum(block, x, y) / 4.0;
+            result.pixels[x][y] = inverseSumDCT(block, x, y) / 4.0;
         }
     }
 
@@ -1017,7 +1187,7 @@ void decodeJpegStream(BitReader& r) {
 
                 Block unzigzag_mcu = Block(mcu);
                 quantize(unzigzag_mcu, quantTable, QuantizeMode::Dequantize);
-                Block inflated_mcu = IDCT(unzigzag_mcu);
+                [[maybe_unused]] Block inflated_mcu = IDCT(unzigzag_mcu);
 
                 // Perform inverse DCT and store pixel data
                 // imageBuffer.storeBlock(mcuRow, mcuCol, component.id, inflated_mcu);
@@ -1152,6 +1322,21 @@ void printBlock(const Block &block) {
     std::cout << "\n";
 }
 
+std::vector<std::uint8_t> get_contents(const char* path) {
+  if(std::ifstream source_file { path, std::ios::binary }; source_file) {
+    return std::vector<std::uint8_t>(std::istreambuf_iterator<char>{source_file}, {});
+  }
+
+  std::cerr << "Unable to correctly open file " << path << ".\n";
+
+  return {};
+}
+
+void loadJpegFile(const char* filename) {
+    BitReader r(get_contents(filename));
+    decodeJpegStream(r);
+}
+
 int main() {
     // Define a sample 8x8 signal block
   Block signal = {{{52, 55, 61, 66, 70, 61, 64, 73},
@@ -1161,7 +1346,9 @@ int main() {
         {67, 61, 68, 104, 126, 88, 68, 70},
         {79, 65, 60, 70, 77, 68, 58, 75},
         {85, 71, 64, 59, 55, 61, 65, 83},
-                   {87, 79, 69, 68, 65, 76, 78, 94}}};
+        {87, 79, 69, 68, 65, 76, 78, 94}}};
+
+    loadJpegFile("profile.jpg");
 
     std::cout << "Original Signal Block:\n";
     printBlock(signal);
