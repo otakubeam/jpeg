@@ -1460,8 +1460,23 @@ std::vector<std::uint8_t> get_contents(const char* path) {
   return {};
 }
 
+void remove0xFF00(std::vector<uint8_t>& data) {
+    size_t wIdx = 0;
+
+    for (size_t rIdx = 0; rIdx < data.size() - 1; ++rIdx, ++wIdx) {
+        data[wIdx] = data[rIdx];
+        if (data[rIdx] == 0xFF && data[rIdx + 1] == 0x00) {
+            ++rIdx;
+        }
+    }
+
+    data.resize(wIdx);
+}
+
 void loadJpegFile(const char* filename) {
-    BitReader r(get_contents(filename));
+    auto jpeg_data = get_contents(filename);
+    remove0xFF00(jpeg_data);
+    BitReader r(jpeg_data);
     decodeJpegStream(r);
 }
 
