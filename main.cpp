@@ -106,9 +106,7 @@ struct Block {
 };
 
 
-using DC = int;
-using AC = int;
-using RunLengthResultAC = std::vector<std::pair<int, AC>>;
+using RunLengthResultAC = std::vector<std::pair<int, int>>;
 
 auto performRle(Block blk) -> RunLengthResultAC {
     int zero_count = 0;
@@ -178,6 +176,18 @@ private:
     size_t total_bits_written;
 };
 
+inline uint8_t clamp(int value) {
+    return static_cast<uint8_t>(value < 0 ? 0 : (value > 255 ? 255 : value));
+}
+
+auto YCbCr_to_RGB(int Y, int Cb, int Cr) -> std::array<uint8_t, 3> {
+    int r = Y + ((1436 * (Cr - 128)) >> 10);  // Approximation for 1.402
+    int g = Y - ((352 * (Cb - 128) + 731 * (Cr - 128)) >> 10); // Approx for 0.344136 & 0.714136
+    int b = Y + ((1814 * (Cb - 128)) >> 10);  // Approximation for 1.772
+
+    return {clamp(r), clamp(g), clamp(b)};
+}
+
 class BitReader {
 public:
     using StorageType = std::uint8_t;
@@ -195,6 +205,27 @@ public:
             read(8);
         }
     }
+
+    // Show 'bitlen' bits without advancing the reader state
+    int peek(size_t bitlen) {
+        // Save the current state
+        auto saved_store = store;
+        auto saved_bits_read = bits_read;
+        auto saved_total_bits_read = total_bits_read;
+        auto saved_buffer_index = buffer_index;
+
+        // Peek the bits
+        int result = read(bitlen);
+
+        // Restore the saved state
+        store = saved_store;
+        bits_read = saved_bits_read;
+        total_bits_read = saved_total_bits_read;
+        buffer_index = saved_buffer_index;
+
+        return result;
+    }
+
 
     // Read 'bitlen' bits and return as an integer
     int read(size_t bitlen) {
@@ -250,13 +281,36 @@ struct ImageBuffer {
         r = R, g = G, b = B;
     }
 
+    void storeBlock(int mcuRow, int mcuCol, const std::vector<Block>& YCbCr) {
+        const int block_size = 8;
+        for (int row = 0; row < block_size; ++row) {
+            for (int col = 0; col < block_size; ++col) {
+                int x = mcuCol + col;
+                int y = mcuRow + row;
+
+                // Ensure coordinates are within bounds
+                if (x >= width || y >= height) {
+                    abort();
+                }
+
+                const Block& Y = YCbCr[0], Cb = YCbCr[1], Cr = YCbCr[2];
+                const auto& [R, G, B] = YCbCr_to_RGB(Y.pixels[row][col] + 128, Cb.pixels[row][col] + 128, Cr.pixels[row][col] + 128);
+
+                // Update the appropriate component (R, G, or B)
+                const auto& [r, g, b] = (*this)[y][x];
+                r = R; g = G; b = B;
+            }
+        }
+    }
+
+
     template <typename T>
     struct PixelView {
         T& R;
         T& G;
         T& B;
 
-        T& operator[](uint8_t idx) {
+        T& operator[](uint8_t idx) const {
             switch (idx) {
             case 0: return R;
             case 1: return G;
@@ -376,17 +430,6 @@ void getComponentsBlocks(ImageBuffer& img) {
     }
 }
 
-// Function to convert YCbCr to RGB
-void YCbCr_to_RGB(int Y, int Cb, int Cr, uint8_t& R, uint8_t& G, uint8_t& B) {
-    double r = Y + 1.402 * (Cr - 128);
-    double g = Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128);
-    double b = Y + 1.772 * (Cb - 128);
-
-    // Clamp the values to [0, 255]
-    R = static_cast<uint8_t>(std::min(std::max(int(std::round(r)), 0), 255));
-    G = static_cast<uint8_t>(std::min(std::max(int(std::round(g)), 0), 255));
-    B = static_cast<uint8_t>(std::min(std::max(int(std::round(b)), 0), 255));
-}
 
 using HuffmanCode = std::pair<int, int>;
 using HuffmanTable = std::map<std::pair<int, int>, HuffmanCode>;
@@ -814,13 +857,15 @@ void writeHuffmanTable(BitWriter& w, const HuffmanTable& table, int id) {
     }
 }
 
+enum DCAC { DC = 0, AC = 1, };
+enum LumChrom { CbCr = 0, Y = 1, };
+
 struct DecodeTable {
-    int id; // ID of the Huffman table (e.g., 0 for DC, 1 for AC)
-    int type; // 0 for Luminance, 1 for Chrominance
-    bool isLuminance() const { return type == 0; } // New boolean field for testing
-    int code_to_symbol_size() const { return code_to_symbol.size(); }
-    std::map<int, uint8_t> code_to_symbol; // Maps Huffman codes to symbols
-    // (symbols are packed {run_length, size} pairs)
+    LumChrom id;
+    DCAC type;      // ID of the Huffman table (e.g., 0 for DC, 1 for AC) 
+    std::map<int, uint8_t> code_to_symbol;  // Maps Huffman codes to symbols
+                                            // (symbols are packed {run_length:4, size:4} pairs)
+    uint8_t codelen_lookup_table[65536] = {0};
 
     // Add a new code-symbol pair to the table
     void addCodeSymbol(int code, uint8_t symbol) {
@@ -852,14 +897,13 @@ struct DecodeTable {
 void decodeHuffmanTable(BitReader& r, DecodeTable& t) {
     // Read the DHT segment length
     [[maybe_unused]] int marker = r.read(16);
-    (void)t.code_to_symbol_size();
     assert(marker == 0xFFC4);
     [[maybe_unused]] int length = r.read(16);
 
     // Read the table ID (8 bits)
     int table_id = r.read(8);
-    t.id = table_id & 0b1111;
-    t.type = (table_id >> 4) & 0b1111;
+    t.id   =  table_id       & 1 ? CbCr : Y;
+    t.type = (table_id >> 4) & 1 ? AC   : DC;
 
     // Read the symbol frequencies for each bit length (16 bytes)
     std::array<int, 17> bitlen_freq = {0};
@@ -874,6 +918,22 @@ void decodeHuffmanTable(BitReader& r, DecodeTable& t) {
         for (int i = 0; i < num_symbols; i++) {
             uint8_t symbol = r.read(8);
             t.addCodeSymbol(code, symbol);
+            for (uint16_t prefix = code << (16 - bitlen); prefix < (code + 1) << (16 - bitlen); prefix++) {
+                // Populate the lookup table for all 16 bit words that have this code as prefix:
+                //
+                //  ||  Code:         0101...1
+                //  ||                --------
+                //  ||  
+                //  ||                (bitlen)  (16 - bitlen)
+                //  ||                -------- ----------------
+                //  ||  Prefix Range: 0101...1 0000 0000...0000
+                //  ||                  ...
+                //  ||                0101...1 1111 1111...1111
+                //  ||  
+                //  ||  End:         (code + 1) << (16 - bitlen)
+                //
+                t.codelen_lookup_table[prefix] = bitlen;
+            }
             code++;
         }
         code <<= 1; // Shift code to the left for the next bit length
@@ -881,15 +941,13 @@ void decodeHuffmanTable(BitReader& r, DecodeTable& t) {
 }
 
 auto decodeSymbol(BitReader& r, const DecodeTable& tab) -> std::pair<int, int> {
-    int code = 0;
-    while (!tab.hasCode(code)) {
-        code <<= 1;
-        code |= r.read(1);
-    }
+    int prefix = r.peek(16);
+    int len = tab.codelen_lookup_table[prefix];
+    int code = r.read(len);
     return tab.getUnpackedSymbol(code);
 }
 
-// 8x8 block
+// 8x8 block (linear), as opposed to 8x8 Block
 struct MCU {
     int DC = 0;
     int AC[63] = {0};
@@ -932,12 +990,23 @@ class MinCodedUnitDecoder {
 public:
     MinCodedUnitDecoder(BitReader& r__) : r{r__} {}
 
+    int decodeValue(int bits, int size) {
+        if (size == 0) return 0;
+
+        // If the sign bit is not set, the number is negative
+        if (uint32_t signBit = 1 << (size - 1); !(bits & signBit)) { 
+            return bits - (1 << size) + 1; // Decode the negative value
+        } else {
+            return bits;
+        }
+    }
+
     MCU decodeMCU(const DecodeTable& dcTable, const DecodeTable& acTable) { 
         MCU result;
         
         // Read the category (the number of bits diff occupies)
         auto [cat, z] = decodeSymbol(r, dcTable);
-        auto dcDiff = r.read(cat);
+        auto dcDiff = decodeValue(r.read(z), z);
         result.DC = dcPredictor = dcPredictor + dcDiff;
 
         for (int i = 0; i < 63; i++) {
@@ -947,7 +1016,7 @@ public:
             }
             i += run_length; // Skip zeroes
             if (size > 0) {
-                result.AC[i] = r.read(size);
+                result.AC[i] = decodeValue(r.read(size), size);
             }
         }
 
