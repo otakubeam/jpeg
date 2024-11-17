@@ -1,13 +1,9 @@
-#include <cassert>
-#include <cstdint>
-#include <ios>
 #include <map>
 #include <array>
-#include <numeric>
-#include <stdlib.h>
-#include <unordered_map>
 #include <vector>
 #include <iostream>
+#include <numeric>
+#include <cassert>
 #include <utility>
 #include <fstream>
 #include <algorithm>
@@ -1480,7 +1476,7 @@ void loadJpegFile(const char* filename) {
     decodeJpegStream(r);
 }
 
-int main() {
+int main(int argc, char** argv) {
     // Define a sample 8x8 signal block
   Block signal = {{{52, 55, 61, 66, 70, 61, 64, 73},
         {63, 59, 55, 90, 109, 85, 69, 72},
@@ -1491,7 +1487,7 @@ int main() {
         {85, 71, 64, 59, 55, 61, 65, 83},
         {87, 79, 69, 68, 65, 76, 78, 94}}};
 
-    loadJpegFile("profile.jpg");
+    loadJpegFile(argv[1]);
 
     std::cout << "Original Signal Block:\n";
     printBlock(signal);
@@ -1502,9 +1498,6 @@ int main() {
     printBlock(dctBlock);
 
 
-    quantize(dctBlock, luminanceQuantTable, QuantizeMode::Quantize);
-    // quantize(dctBlock, chrominanceQuantTable);
-    // quantize(dctBlock, chrominanceQuantTable);
 
     // Perform IDCT on the DCT coefficients block
     Block reconstructedBlock = IDCT(dctBlock);
