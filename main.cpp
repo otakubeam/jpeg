@@ -1042,26 +1042,80 @@ struct JPEGHeader {
     std::array<ComponentInfo, 3> components; // Information for each component (Y, Cb, Cr)
 };
 
-bool skipToSOF(BitReader &r) {
-    while (auto byte1 = r.read(8)) {
-        if (byte1 == 0xFF) {
-            auto byte2 = r.read(8);
+std::array<Block, 4> quantTables;
 
-            // Check if we found a Start of Frame (SOF) marker
-            if (byte2 >= 0xC0 && byte2 <= 0xC3) {
-                std::cout << "Found Start of Frame (SOF) marker: 0xFF" << std::hex << static_cast<int>(byte2) << std::endl;
-                return true;
-            }
+void decodeQuantizationTable(BitReader& r) {
+    // Read the length of the DQT segment
+    [[maybe_unused]] int length = r.read(16);
+    int bytesRead = 2; // Account for the length field already read
 
-            // Skip non-SOF segments (like APP, DQT, etc.)
-            if (byte2 != 0xD8 && byte2 != 0xD9) { // Exclude SOI and EOI markers
-                uint16_t segmentLength = r.read(16);
-                r.skipBytes(segmentLength - 2);
+    while (bytesRead < length) {
+        // Read the table precision and ID
+        uint8_t pq_tq = r.read(8);
+        int precision = pq_tq >> 4;  // Upper 4 bits: precision (0 = 8-bit, 1 = 16-bit)
+        int tableID = pq_tq & 0x0F;  // Lower 4 bits: quantization table ID
+
+        assert(tableID < 4); // JPEG standard allows up to 4 quantization tables
+        Block& qTable = quantTables[tableID];
+
+        // Read the quantization values
+        for (int i = 0; i < 64; i++) {
+            if (precision == 0) {
+                // 8-bit precision
+                qTable.pixels[i / 8][i % 8] = r.read(8);
+            } else {
+                // 16-bit precision
+                qTable.pixels[i / 8][i % 8] = r.read(16);
             }
         }
+
+        bytesRead += (precision == 0) ? 65 : 129; // 1 byte for pq_tq + table data size
     }
-    std::cerr << "SOF marker not found in the file." << std::endl;
-    return false;
+}
+
+bool skipToSOF(BitReader &r) {
+    if (r.read(16) != 0xFFD8) {
+        std::abort();
+    }
+
+    while (true) {
+        if (r.read(8) != 0xFF) {
+            std::cerr << "Invalid marker, expected 0xFF." << std::endl;
+            std::abort();
+        }
+
+        uint8_t marker = r.read(8);
+        switch (marker) {
+            case 0xC0: // SOF (Start of Frame)
+            case 0xC1:
+            case 0xC2:
+            case 0xC3:
+                return true;
+
+            case 0xDB: // DQT (Define Quantization Table)
+                std::cout << "Found DQT (Define Quantization Table) marker." << std::endl;
+                decodeQuantizationTable(r);
+                break;
+
+            case 0xDD: // DRI (Define Restart Interval)
+            case 0xFE: // COM (Comment)
+                r.skipBytes(r.read(16) - 2);
+                break;
+
+            default:
+                // Handle APPn markers (0xE0 - 0xEF)
+                if ((marker & 0xF0) == 0xE0) {
+                    std::cout << "Skipping APP marker: 0xFF" 
+                              << std::hex << static_cast<int>(marker) << std::endl;
+                    uint16_t appLength = r.read(16);
+                    r.skipBytes(appLength - 2);
+                } else {
+                    std::cerr << "Unsupported marker: 0xFF" 
+                              << std::hex << static_cast<int>(marker) << std::endl;
+                    return false;
+                }
+        }
+    }
 }
 
 void decodeHeader(BitReader& r, JPEGHeader& header) {
@@ -1120,6 +1174,7 @@ struct ScanHeader {
 };
 
 void decodeSOS(BitReader& r, ScanHeader& scanHeader) {
+    [[maybe_unused]] int m = r.read(16); // Marker
     [[maybe_unused]] int length = r.read(16); // Length of the SOS segment
     scanHeader.numComponents = r.read(8); // Number of components in scan
 
