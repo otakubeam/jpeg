@@ -1282,19 +1282,24 @@ void decodeJpegStream(BitReader& r) {
 
     ImageBuffer imageBuffer(header.width, header.height);
 
-    DecodeTable tables[2][2];
+    // Decode the Huffman tables
+    std::vector<std::vector<DecodeTable>> tables(2, std::vector<DecodeTable>(2)); // [Lum][ACDC]
+
     for (int i = 0; i < 4; i++) {
         DecodeTable tab;
         decodeHuffmanTable(r, tab);
         tables[tab.id][tab.type] = std::move(tab);
     }
-
-    DecodeTable acLuminance, dcLuminance, acChrominance, dcChrominance;
-    decodeHuffmanTable(r, acLuminance), decodeHuffmanTable(r, dcLuminance);
-    decodeHuffmanTable(r, acChrominance), decodeHuffmanTable(r, dcChrominance);
+    
+    DecodeTable& acLuminance = tables[Y][AC], acChrominance = tables[CbCr][AC], 
+                 dcLuminance = tables[Y][DC], dcChrominance = tables[CbCr][DC]; 
 
     ScanHeader scan_header;
     decodeSOS(r, scan_header);
+
+    // To save the difference
+    std::vector<MinCodedUnitDecoder> MCU_decoder = { {r}, {r}, {r} };
+    std::vector<Block> blocksYCbCr(3);
 
     // Loop through each MCU in the image
     for (int mcuRow = 0; mcuRow < header.height; mcuRow += 8) {
@@ -1303,21 +1308,20 @@ void decodeJpegStream(BitReader& r) {
                 // Choose the correct Huffman and quantization tables
                 DecodeTable& dcTable = (component.id == 1) ? dcLuminance : dcChrominance;
                 DecodeTable& acTable = (component.id == 1) ? acLuminance : acChrominance;
-                const Block& quantTable = (component.id == 1) ? luminanceQuantTable : chrominanceQuantTable;
-
+                const Block& quantTable = quantTables[header.components[component.id - 1].quant_table_id];
+                
                 // Decode the MCU
-                MinCodedUnitDecoder MCU_decoder(r);
-                MCU mcu = MCU_decoder.decodeMCU(dcTable, acTable);
+                MCU mcu = MCU_decoder[component.id - 1].decodeMCU(dcTable, acTable);
 
-                Block unzigzag_mcu = Block(mcu);
+                Block unzigzag_mcu = Block(mcu); // Traverse and reverse zig-zag order
                 quantize(unzigzag_mcu, quantTable, QuantizeMode::Dequantize);
-                [[maybe_unused]] Block inflated_mcu = IDCT(unzigzag_mcu);
-
                 // Perform inverse DCT and store pixel data
-                // imageBuffer.storeBlock(mcuRow, mcuCol, component.id, inflated_mcu);
+                blocksYCbCr[component.id - 1] = IDCT(unzigzag_mcu);
             }
+            imageBuffer.storeBlock(mcuRow, mcuCol, blocksYCbCr);
         }
     }
+    writeBMP(imageBuffer,  "bmpfile.bmp");
 }
 
 void writeJpegHeader() {
